@@ -4,48 +4,40 @@ namespace Commerce\Payments;
 
 class AlfabankPayment extends Payment
 {
+    protected $debug = false;
+
     public function __construct($modx, array $params = [])
     {
         parent::__construct($modx, $params);
         $this->lang = $modx->commerce->getUserLanguage('alfabank');
+        $this->debug = $this->getSetting('debug') == 1;
     }
 
     public function getMarkup()
     {
         if (empty($this->getSetting('token')) && (empty($this->getSetting('login')) || empty($this->getSetting('password')))) {
-            return '<span class="error" style="color: red;">' . $this->lang['sberbank.error_empty_token_and_login_password'] . '</span>';
+            return '<span class="error" style="color: red;">' . $this->lang['alfabank.error_empty_token_and_login_password'] . '</span>';
         }
     }
 
     public function getPaymentLink()
     {
-        try {
-            $result = $this->registerOrder();
-            if ($result === false || empty($result['formUrl'])) {
-                throw new \Exception('Request failed!');
-            }
-        } catch (\Exception $e) {
-            $this->modx->logEvent(0, 3, 'Link is not received: ' . $e->getMessage(), 'Commerce Alfabank Payment');
-
-            return false;
-        }
-
-        return $result['formUrl'];
-    }
-
-    protected function registerOrder()
-    {
         $processor = $this->modx->commerce->loadProcessor();
-        $order     = $processor->getOrder();
-        $order_id  = $order['id'];
-        $currency  = ci()->currency->getCurrency($order['currency']);
+        $order = $processor->getOrder();
+        $order_id = $order['id'];
+        $currency = ci()->currency->getCurrency($order['currency']);
 
         $amount = ci()->currency->convert($order['amount'], $currency['code'], 'RUB');
 
         try {
             $payment = $this->createPayment($order['id'], $amount);
         } catch (\Exception $e) {
-            $this->modx->logEvent(0, 3, 'Failed to create payment: ' . $e->getMessage() . '<br>Data: <pre>' . htmlentities(print_r($order, true)) . '</pre>', 'Commerce Alfabank Payment');
+            if ($this->debug) {
+                $this->modx->logEvent(0, 3,
+                    'Failed to create payment: ' . $e->getMessage() . '<br>Data: <pre>' . htmlentities(print_r($order,
+                        true)) . '</pre>', 'Commerce Alfabank Payment');
+            }
+
             return false;
         }
 
@@ -75,16 +67,17 @@ class AlfabankPayment extends Payment
         }
 
         $data = [
-            'orderNumber' => $order_id . '-' . time(),
-            'amount'      => (int) round($payment['amount'] * 100),
-            'currency'    => 810,
-            'language'    => 'ru',
-            'jsonParams'  => json_encode($params),
-            'returnUrl'   => $this->modx->getConfig('site_url') . 'commerce/alfabank/payment-process/?' . http_build_query([
+            'orderNumber'        => $order_id . '-' . time(),
+            'amount'             => (int) round($payment['amount'] * 100),
+            'currency'           => 810,
+            'language'           => 'ru',
+            'jsonParams'         => json_encode($params),
+            'returnUrl'          => MODX_SITE_URL . 'commerce/alfabank/payment-success?paymentHash=' . $payment['hash'],
+            'dynamicCallbackUrl' => MODX_SITE_URL . 'commerce/alfabank/payment-process/?' . http_build_query([
                     'paymentId'   => $payment['id'],
                     'paymentHash' => $payment['hash'],
                 ]),
-            'description' => ci()->tpl->parseChunk($this->lang['payments.payment_description'], [
+            'description'        => ci()->tpl->parseChunk($this->lang['payments.payment_description'], [
                 'order_id'  => $order_id,
                 'site_name' => $this->modx->getConfig('site_name'),
             ]),
@@ -104,59 +97,89 @@ class AlfabankPayment extends Payment
 
             foreach ($items as $i => $item) {
                 $products[] = [
-                    'positionId'  => $i + 1,
-                    'name'        => $item['name'],
-                    'quantity'    => [
+                    'positionId' => $i + 1,
+                    'name'       => $item['name'],
+                    'quantity'   => [
                         'value'   => $item['count'],
                         'measure' => $item['product'] ? isset($meta['measurements']) ? $meta['measurements'] : $this->lang['measures.units'] : '-',
                     ],
-                    'itemAmount'  => (int) round($item['total'] * 100),
-                    'itemPrice'   => (int) round($item['price'] * 100),
-                    'itemCode'    => $item['id'],
+                    'itemAmount' => (int) round($item['total'] * 100),
+                    'itemPrice'  => (int) round($item['price'] * 100),
+                    'itemCode'   => $item['id'],
                 ];
             }
 
             $data['orderBundle'] = json_encode([
                 'orderCreationDate' => date('c'),
                 'customerDetails'   => $customer,
-                'cartItems' => [
+                'cartItems'         => [
                     'items' => $products,
                 ],
             ]);
-        } else if (!empty($this->getSetting('debug'))) {
-            $this->modx->logEvent(0, 2, 'User credentials not found in order: <pre>' . htmlentities(print_r($order, true)) . '</pre>', 'Commerce Alfabank Payment Debug');
+        } else {
+            if ($this->debug) {
+                $this->modx->logEvent(0, 2,
+                    'User credentials not found in order: <pre>' . htmlentities(print_r($order, true)) . '</pre>',
+                    'Commerce Alfabank Payment Debug');
+            }
         }
 
-       return $this->request('rest/register.do', $data);
+        try {
+            $result = $this->request('rest/register.do', $data);
+
+            if (empty($result['formUrl'])) {
+                throw new \Exception('Request failed!');
+            }
+        } catch (\Exception $e) {
+            if ($this->debug) {
+                $this->modx->logEvent(0, 3, 'Link is not received: ' . $e->getMessage(), 'Commerce Alfabank Payment');
+            }
+            return false;
+        }
+
+        return $result['formUrl'];
     }
 
     public function handleCallback()
     {
-        if (isset($_REQUEST['orderId']) && is_string($_REQUEST['orderId']) && preg_match('/^[a-z0-9-]{36}$/', $_REQUEST['orderId'])) {
-            $order_id = $_REQUEST['orderId'];
-
-            try {
-                $status = $this->request('rest/getOrderStatusExtended.do', [
-                    'orderId' => $order_id,
-                ]);
-            } catch (\Exception $e) {
-                $this->modx->logEvent(0, 3, 'Order status request failed: ' . $e->getMessage(), 'Commerce Alfabank Payment');
+        $params = ['mdOrder', 'orderNumber', 'checksum', 'operation', 'status'];
+        foreach ($params as $param) {
+            if(empty($_REQUEST[$param]) || !is_scalar($_REQUEST[$param])) {
                 return false;
             }
+        }
+        if ($this->debug) {
+            $this->modx->logEvent(0, 3, 'Callback start:<pre>' . print_r($_REQUEST, true) . '</pre>', 'Commerce Alfabank Payment Callback');
+        }
 
-            if (empty($status['errorCode']) && !empty($status['orderStatus']) && in_array($status['orderStatus'], [1, 2]) && !empty($_REQUEST['paymentId']) && !empty($_REQUEST['paymentHash'])) {
-                try {
-                    $processor = $this->modx->commerce->loadProcessor();
-                    $payment   = $processor->loadPayment($_REQUEST['paymentId']);
-                    $order     = $processor->loadOrder($payment['order_id']);
+        sort($params);
+        $paramsString = '';
+        foreach ($params as $param) {
+            if ($param == 'checksum') continue;
+            $paramsString .= $param . ';' . $_REQUEST[$param] . ';';
+        }
+        $checksum = $_REQUEST['checksum'];
+        $hash = strtoupper(hash_hmac('sha256', $paramsString, $this->getSetting('secret_key')));
 
-                    $processor->processPayment($payment, ci()->currency->convert(floatval($status['amount']) * 0.01, 'RUB', $order['currency']));
-                } catch (\Exception $e) {
-                    $this->modx->logEvent(0, 3, 'Payment process failed: ' . $e->getMessage(), 'Commerce Alfabank Payment');
-                    return false;
+        if ($checksum !== $hash) {
+            if ($this->debug) {
+                $this->modx->logEvent(0, 3, 'Order status request failed', 'Commerce Alfabank Payment Callback');
+            }
+
+            return false;
+        }
+
+        if ($_REQUEST['operation'] == 'deposited' && $_REQUEST['status'] == 1) {
+            try {
+                $processor = $this->modx->commerce->loadProcessor();
+                $payment = $processor->loadPayment($_REQUEST['paymentId']);
+                return $processor->processPayment($payment['id'], $payment['amount']);
+            } catch (\Exception $e) {
+                if ($this->debug) {
+                    $this->modx->logEvent(0, 3, 'Payment process failed: ' . $e->getMessage(),  'Commerce Alfabank Payment Callback');
                 }
 
-                $this->modx->sendRedirect(MODX_BASE_URL . 'commerce/alfabank/payment-success?paymentHash=' . $_REQUEST['paymentHash']);
+                return false;
             }
         }
 
@@ -178,7 +201,7 @@ class AlfabankPayment extends Payment
             $data['password'] = $this->getSetting('password');
         }
 
-        $url  = $this->getUrl($method);
+        $url = $this->getUrl($method);
         $curl = curl_init();
 
         curl_setopt_array($curl, [
@@ -200,19 +223,27 @@ class AlfabankPayment extends Payment
         $code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
         curl_close($curl);
 
-        if (!empty($this->getSetting('debug'))) {
-            $this->modx->logEvent(0, 1, 'URL: <pre>' . $url . '</pre><br>Data: <pre>' . htmlentities(print_r($data, true)) . '</pre><br>Response: <pre>' . $code . "\n" . htmlentities(print_r($result, true)) . '</pre><br>', 'Commerce Alfabank Payment Debug');
+        if ($this->debug) {
+            $this->modx->logEvent(0, 1, 'URL: <pre>' . $url . '</pre><br>Data: <pre>' . htmlentities(print_r($data,
+                    true)) . '</pre><br>Response: <pre>' . $code . "\n" . htmlentities(print_r($result,
+                    true)) . '</pre><br>', 'Commerce Alfabank Payment');
         }
 
         if ($code != 200) {
-            $this->modx->logEvent(0, 3, 'Server is not responding', 'Commerce Alfabank Payment');
+            if ($this->debug) {
+                $this->modx->logEvent(0, 3, 'Server is not responding', 'Commerce Alfabank Payment');
+            }
+
             return false;
         }
 
         $result = json_decode($result, true);
 
         if (!empty($result['errorCode']) && isset($result['errorMessage'])) {
-            $this->modx->logEvent(0, 3, 'Server return error: ' . $result['errorMessage'], 'Commerce Alfabank Payment');
+            if ($this->debug) {
+                $this->modx->logEvent(0, 3, 'Server return error: ' . $result['errorMessage'], 'Commerce Alfabank Payment');
+            }
+
             return false;
         }
 

@@ -5,10 +5,10 @@
  * Alfabank payments processing
  *
  * @category    plugin
- * @version     0.1.0
+ * @version     1.0.0
  * @author      Pathologic
  * @internal    @events OnRegisterPayments,OnBeforeOrderSending,OnManagerBeforeOrderRender
- * @internal    @properties &title=Название;text; &token=Токен;text; &login=Логин;text; &password=Пароль;text; &debug=Отладка запросов;list;Нет==0||Да==1;1 &test=Тестовый доступ;list;Нет==0||Да==1;1
+ * @internal    @properties &title=Название;text; &secret_key=Секретный ключ;text; &login=Логин;text; &password=Пароль;text; &debug=Отладка запросов;list;Нет==0||Да==1;1 &test=Тестовый доступ;list;Нет==0||Да==1;1
  * @internal    @modx_category Commerce
  * @internal    @installset base
 */
