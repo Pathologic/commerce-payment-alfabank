@@ -188,7 +188,18 @@ class AlfabankPayment extends Payment
 
     protected function getUrl($method)
     {
-        $url = $this->getSetting('test') == 1 ? 'https://web.rbsuat.com/ab/' : 'https://pay.alfabank.ru/payment/';
+        $test = $this->getSetting('test');
+        $login = $this->getSetting('login');
+        $url = '';
+        if (strpos($login, "r-") === 0) {
+            $url = $test == 1 ? 'https://alfa.rbsuat.com/payment/' : 'https://payment.alfabank.ru/payment/';
+        }
+        elseif (strpos($login, "i-") === 0) {
+            $url = $test == 1 ? 'https://tws.egopay.ru/api/ab/' : 'https://ecom.alfabank.ru/api/';
+        }
+        else {
+            $url = $test == 1 ? 'https://alfa.rbsuat.com/payment/' : 'https://pay.alfabank.ru/payment/';
+        }
         return $url . $method;
     }
 
